@@ -5,8 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Googleカレンダー連携</title>
 
-    <!-- FullCalendarのCSSファイル -->
-    <link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.css" rel="stylesheet" />
+    <!-- FullCalendarのCSSのCDNリンク -->
+    <link href='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.4/main.min.css' rel='stylesheet' />
 
     <!-- jQueryの読み込み -->
     <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
@@ -17,8 +17,14 @@
     <!-- Google Identity Servicesライブラリ -->
     <script src="https://accounts.google.com/gsi/client" async defer></script>
 
-    <!-- FullCalendarのJSファイル -->
-    <script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.15/index.global.min.js"></script>
+    <!-- FullCalendarのJavaScriptのCDNリンク -->
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.4/main.min.js'></script>
+
+    <!-- FullCalendarのGoogleカレンダー用ライブラリ -->
+    <script src="https://cdn.jsdelivr.net/npm/@fullcalendar/google-calendar@6.1.6/index.global.min.js"></script>
+
+    <!-- FullCalendarの言語サポートのCDNリンク -->
+    <script src='https://cdn.jsdelivr.net/npm/fullcalendar@5.11.4/locales-all.min.js'></script>
 
     <style>
       body {
@@ -85,6 +91,7 @@
         }).then(function () {
           console.log("Google API Client Initialized");
           gapiInitialized = true;
+          maybeInitializeCalendar();  // カレンダーの初期化を確認
         }).catch(function(error) {
           console.error("gapi client initialization failed:", error);
         });
@@ -103,7 +110,7 @@
               $('#signin-button').hide();
               $('#signout-button').show();
               gapi.client.setToken({ access_token: accessToken });
-              maybeInitializeCalendar();
+              maybeInitializeCalendar();  // トークン取得後にカレンダー初期化
             },
           });
         } else {
@@ -149,6 +156,9 @@
 
         console.log("Loading Calendar...");
 
+        // ローカルストレージから保存されたイベントを取得
+        var storedEvents = JSON.parse(localStorage.getItem('calendarEvents')) || [];
+
         try {
           // FullCalendarのインスタンスを作成
           var calendarEl = document.getElementById('calendar');
@@ -161,6 +171,7 @@
             selectable: true,
             editable: true,
             initialView: 'dayGridMonth',
+            locale: 'ja',  // 日本語設定
 
             // GoogleカレンダーのAPIキーをGoogleカレンダーイベントのソースに設定
             eventSources: [
@@ -170,61 +181,91 @@
                 className: 'company-calendar',
                 failure: function() {
                   console.error("会社用カレンダーの読み込みに失敗しました。");
-                },
-                success: function(events) {
-                  console.log(events.length + "件の会社用カレンダーイベントを読み込みました。");
                 }
               },
               {
                 googleCalendarApiKey: API_KEY,  // APIキー
                 googleCalendarId: personalCalendarId,  // プライベートのカレンダーID
                 className: 'personal-calendar'
+              },
+              {
+                events: storedEvents,  // ローカルストレージからのイベント
+                editable: true,
+                className: 'local-storage-events'
               }
             ],
 
-            // イベントクリック時の処理
-            eventClick: function(info) {
-              if (confirm("このイベントを削除しますか？")) {
-                deleteEvent(info.event);
-              }
+            // イベントの追加・変更・削除をローカルストレージに保存
+            eventAdd: function(info) {
+              console.log('Event added:', info.event);
+              saveEvents();
+            },
+            eventChange: function(info) {
+              console.log('Event changed:', info.event);
+              saveEvents();
+            },
+            eventRemove: function(info) {
+              console.log('Event removed:', info.event);
+              saveEvents();
             },
 
             // 新しいイベントをカレンダーに追加
-            select: function(info) {
-              var title = prompt('イベントのタイトル:');
-              if (title) {
-                var selectedCalendarId = prompt('どのカレンダーに追加しますか？\n1. 会社用\n2. プライベート', '1') === '1' 
-                  ? companyCalendarId 
-                  : personalCalendarId;
+            select: function(arg) {
+              var title = prompt('Event Title:');
+              var calendarSelection = prompt('どのカレンダーに追加しますか？\n1. 会社カレンダー\n2. プライベートカレンダー', '1');
+              if (title && calendarSelection) {
+                var selectedCalendarId = (calendarSelection === '1') ? companyCalendarId : personalCalendarId;
 
                 var event = {
-                  'summary': title,
-                  'start': {
-                    'dateTime': info.startStr,
-                    'timeZone': 'Asia/Tokyo'
+                  summary: title, // イベントタイトル
+                  start: {
+                    dateTime: arg.startStr,
+                    timeZone: 'Asia/Tokyo'
                   },
-                  'end': {
-                    'dateTime': info.endStr,
-                    'timeZone': 'Asia/Tokyo'
+                  end: {
+                    dateTime: arg.endStr,
+                    timeZone: 'Asia/Tokyo'
                   }
                 };
 
+                // Googleカレンダーにイベントを追加
                 gapi.client.calendar.events.insert({
                   'calendarId': selectedCalendarId,
                   'resource': event
-                }).then(function(event) {
+                }).then(function(response) {
+                  console.log('Event added to Google Calendar:', response);
+                  // FullCalendarに反映
                   calendar.addEvent({
                     title: title,
-                    start: info.startStr,
-                    end: info.endStr,
-                    id: event.result.id,
+                    start: arg.start,
+                    end: arg.end,
+                    allDay: arg.allDay,
+                    id: response.result.id,  // GoogleカレンダーのイベントIDを保存
                     extendedProps: {
                       googleCalendarId: selectedCalendarId
                     }
                   });
+                  saveEvents();  // ローカルストレージに保存
                 });
               }
-              calendar.unselect();
+              calendar.unselect();  // 選択解除
+            },
+
+            // イベントクリック時に削除
+            eventClick: function(info) {
+              if (confirm("このイベントを削除しますか？")) {
+                var calendarId = info.event.extendedProps.googleCalendarId;
+                var eventId = info.event.id;
+
+                // Googleカレンダーからイベントを削除
+                gapi.client.calendar.events.delete({
+                  'calendarId': calendarId,
+                  'eventId': eventId
+                }).then(function() {
+                  info.event.remove();  // FullCalendarからもイベントを削除
+                  saveEvents();  // ローカルストレージに保存
+                });
+              }
             }
           });
 
@@ -235,17 +276,19 @@
         }
       }
 
-      // Googleカレンダーからイベントを削除する関数
-      function deleteEvent(event) {
-        var calendarId = event.extendedProps.googleCalendarId;
-        var eventId = event.id;
-
-        gapi.client.calendar.events.delete({
-          'calendarId': calendarId,
-          'eventId': eventId
-        }).then(function() {
-          event.remove();  // FullCalendarからもイベントを削除
+      // イベントをローカルストレージに保存する関数
+      function saveEvents() {
+        var events = calendar.getEvents();
+        var eventsData = events.map(function(event) {
+          return {
+            title: event.title,
+            start: event.start.toISOString(),
+            end: event.end ? event.end.toISOString() : null,
+            allDay: event.allDay
+          };
         });
+        localStorage.setItem('calendarEvents', JSON.stringify(eventsData));
+        console.log("Events saved to local storage.");
       }
 
       // ページロード後に初期化を行う
